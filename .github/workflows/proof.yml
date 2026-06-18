@@ -1,0 +1,38 @@
+name: sslnegotiation proof
+
+# Objectively prove that node-postgres `master` works with PostgreSQL 17
+# `sslnegotiation=direct` (PR #3688). Everything runs in Docker containers, so
+# the run is fully reproducible: CI does exactly what you'd do locally.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      node_postgres_ref:
+        description: 'node-postgres git ref to test (branch/tag/commit)'
+        required: false
+        default: 'master'
+  # Re-run weekly so the badge keeps reflecting the current state of master.
+  schedule:
+    - cron: '17 6 * * 1'
+
+jobs:
+  proof:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run the containerized proof against node-postgres ${{ github.event.inputs.node_postgres_ref || 'master' }}
+        env:
+          NODE_POSTGRES_REF: ${{ github.event.inputs.node_postgres_ref || 'master' }}
+        run: |
+          docker compose build --build-arg NODE_POSTGRES_REF="$NODE_POSTGRES_REF"
+          docker compose up \
+            --abort-on-container-exit \
+            --exit-code-from tester
+
+      - name: Tear down
+        if: always()
+        run: docker compose down -v

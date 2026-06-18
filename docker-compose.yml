@@ -1,0 +1,57 @@
+# Fully containerized proof that node-postgres `master` supports
+# PostgreSQL 17 `sslnegotiation=direct` (PR #3688, merged but unreleased).
+#
+#   docker compose up --build --abort-on-container-exit --exit-code-from tester
+#
+# The `tester` service installs `pg` straight from node-postgres master,
+# then runs end-to-end, server-side, and wire-level proofs against a real
+# PostgreSQL 17 server with TLS enabled. Its exit code is the verdict.
+
+services:
+  postgres:
+    image: postgres:17
+    # Generate a self-signed cert on first boot, then start with SSL on.
+    # Everything happens inside the container — no host files needed.
+    environment:
+      POSTGRES_PASSWORD: secret
+      POSTGRES_HOST_AUTH_METHOD: trust
+    command:
+      - bash
+      - -c
+      - |
+        set -e
+        CERT=/var/lib/postgresql/server.crt
+        KEY=/var/lib/postgresql/server.key
+        if [ ! -f "$$KEY" ]; then
+          openssl req -new -x509 -days 365 -nodes -text \
+            -out "$$CERT" -keyout "$$KEY" -subj "/CN=localhost"
+          chmod 600 "$$KEY"
+          chown postgres:postgres "$$CERT" "$$KEY"
+        fi
+        exec docker-entrypoint.sh postgres \
+          -c ssl=on \
+          -c ssl_cert_file="$$CERT" \
+          -c ssl_key_file="$$KEY"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    expose:
+      - "5432"
+
+  tester:
+    build:
+      context: ./tester
+      args:
+        NODE_POSTGRES_REF: ${NODE_POSTGRES_REF:-master}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGHOST: postgres
+      PGPORT: "5432"
+      PGUSER: postgres
+      PGDATABASE: postgres
+      # Pin which node-postgres ref to test. Defaults to master.
+      NODE_POSTGRES_REF: ${NODE_POSTGRES_REF:-master}

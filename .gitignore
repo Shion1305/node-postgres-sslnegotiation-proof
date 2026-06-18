@@ -1,0 +1,5 @@
+node_modules/
+*.tgz
+*.key
+*.crt
+NODE_POSTGRES_HEAD

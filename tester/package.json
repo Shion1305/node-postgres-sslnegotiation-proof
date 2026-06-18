@@ -1,0 +1,13 @@
+{
+  "name": "sslnegotiation-proof-tester",
+  "private": true,
+  "version": "0.0.0",
+  "type": "commonjs",
+  "description": "Installs pg from node-postgres master and proves sslnegotiation=direct works against PostgreSQL 17.",
+  "dependencies": {
+    "pg": "file:./pg.tgz"
+  },
+  "overrides": {
+    "pg-connection-string": "file:./pg-connection-string.tgz"
+  }
+}
