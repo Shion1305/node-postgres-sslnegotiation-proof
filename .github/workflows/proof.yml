@@ -46,11 +46,14 @@ jobs:
         if: always()
         run: |
           mkdir -p artifacts
+          # PostgreSQL's own log of the connections (write this first, before the
+          # docker copy below changes the directory's ownership to root).
+          docker compose logs --no-color postgres > artifacts/postgres-server.log 2>&1 || true
           # Copy everything the tester wrote to the shared `out` volume.
           docker run --rm -v "$(docker volume ls -q | grep -E '_out$' | head -1)":/out \
             -v "$PWD/artifacts":/dst alpine:3.20 sh -c 'cp -a /out/. /dst/ 2>/dev/null || true'
-          # Capture the PostgreSQL server-side log (its own record of SSL conns).
-          docker compose logs --no-color postgres > artifacts/postgres-server.log 2>&1 || true
+          # Hand the copied (root-owned) files back to the runner user.
+          sudo chown -R "$(id -u):$(id -g)" artifacts || true
           echo "Collected:"; ls -la artifacts || true
 
       - name: Render Job Summary from evidence.json
