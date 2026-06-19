@@ -38,7 +38,8 @@ jobs:
         id: run
         run: |
           set +e
-          docker compose up --abort-on-container-exit --exit-code-from tester
+          # Only `tester` exits; --exit-code-from reports its code as the verdict.
+          docker compose up --exit-code-from tester
           echo "exit_code=$?" >> "$GITHUB_OUTPUT"
 
       - name: Collect artifacts (evidence, pcap, logs)

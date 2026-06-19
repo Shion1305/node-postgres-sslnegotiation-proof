@@ -1,47 +1,46 @@
 # Fully containerized proof that node-postgres `master` supports
 # PostgreSQL 17 `sslnegotiation=direct` (PR #3688, merged but unreleased).
 #
-#   docker compose up --build --abort-on-container-exit --exit-code-from tester
+#   docker compose up --build --exit-code-from tester
 #
-# A `certgen` init service mints a throwaway CA + leaf certs for the hostname
-# `localhost.shion.dev` into a shared volume. The `tester` connects to Postgres
-# by that hostname (it resolves to the postgres container via extra_hosts), so
-# node-postgres genuinely sends it as the TLS SNI and verifies the server cert
-# against the CA with rejectUnauthorized=true. The tester installs `pg` straight
-# from node-postgres master; its exit code is the verdict.
+# `postgres` generates a throwaway CA + leaf certs for `localhost.shion.dev` on
+# startup, then runs with ssl=on. The `tester` connects to Postgres by that
+# hostname (resolved to the postgres container via a network alias), so
+# node-postgres sends it as the TLS SNI and verifies the server cert against the
+# CA with rejectUnauthorized=true. The tester installs `pg` straight from
+# node-postgres master; its exit code is the verdict.
+#
+# Only `tester` is expected to exit, so `--exit-code-from tester` (which implies
+# --abort-on-container-exit) reports the verdict cleanly. There is deliberately
+# no separate init container: a one-shot service that exits would trip
+# --abort-on-container-exit and tear everything down before the proofs run.
 
 services:
-  # Mint CA + server/front certs (CN/SAN = localhost.shion.dev) into /certs, then exit.
-  certgen:
-    image: alpine:3.20
-    volumes:
-      - certs:/certs
-      - ./certs/gen-certs.sh:/gen-certs.sh:ro
-    command: ["sh", "-c", "apk add --no-cache openssl >/dev/null && sh /gen-certs.sh"]
-
   postgres:
     image: postgres:17
-    depends_on:
-      certgen:
-        condition: service_completed_successfully
     environment:
       POSTGRES_PASSWORD: secret
       POSTGRES_HOST_AUTH_METHOD: trust
     volumes:
-      - certs:/certs:ro
+      # Shared with the tester (which reads the CA to verify the server cert).
+      - certs:/certs
+      - ./certs/gen-certs.sh:/gen-certs.sh:ro
+    # Generate the CA + server/front certs (idempotent) before starting Postgres.
     command:
-      - postgres
+      - bash
       - -c
-      - ssl=on
-      - -c
-      - ssl_cert_file=/certs/server.crt
-      - -c
-      - ssl_key_file=/certs/server.key
+      - |
+        sh /gen-certs.sh
+        exec docker-entrypoint.sh postgres \
+          -c ssl=on \
+          -c ssl_cert_file=/certs/server.crt \
+          -c ssl_key_file=/certs/server.key
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      # Healthy only once Postgres is up AND the CA the tester needs exists.
+      test: ["CMD-SHELL", "pg_isready -U postgres && test -f /certs/ca.crt"]
       interval: 2s
       timeout: 3s
-      retries: 30
+      retries: 40
     expose:
       - "5432"
     # Docker DNS resolves localhost.shion.dev -> this container inside the network,
