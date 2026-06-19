@@ -3,35 +3,40 @@
 #
 #   docker compose up --build --abort-on-container-exit --exit-code-from tester
 #
-# The `tester` service installs `pg` straight from node-postgres master,
-# then runs end-to-end, server-side, and wire-level proofs against a real
-# PostgreSQL 17 server with TLS enabled. Its exit code is the verdict.
+# A `certgen` init service mints a throwaway CA + leaf certs for the hostname
+# `localhost.shion.dev` into a shared volume. The `tester` connects to Postgres
+# by that hostname (it resolves to the postgres container via extra_hosts), so
+# node-postgres genuinely sends it as the TLS SNI and verifies the server cert
+# against the CA with rejectUnauthorized=true. The tester installs `pg` straight
+# from node-postgres master; its exit code is the verdict.
 
 services:
+  # Mint CA + server/front certs (CN/SAN = localhost.shion.dev) into /certs, then exit.
+  certgen:
+    image: alpine:3.20
+    volumes:
+      - certs:/certs
+      - ./certs/gen-certs.sh:/gen-certs.sh:ro
+    command: ["sh", "-c", "apk add --no-cache openssl >/dev/null && sh /gen-certs.sh"]
+
   postgres:
     image: postgres:17
-    # Generate a self-signed cert on first boot, then start with SSL on.
-    # Everything happens inside the container — no host files needed.
+    depends_on:
+      certgen:
+        condition: service_completed_successfully
     environment:
       POSTGRES_PASSWORD: secret
       POSTGRES_HOST_AUTH_METHOD: trust
+    volumes:
+      - certs:/certs:ro
     command:
-      - bash
+      - postgres
       - -c
-      - |
-        set -e
-        CERT=/var/lib/postgresql/server.crt
-        KEY=/var/lib/postgresql/server.key
-        if [ ! -f "$$KEY" ]; then
-          openssl req -new -x509 -days 365 -nodes -text \
-            -out "$$CERT" -keyout "$$KEY" -subj "/CN=localhost"
-          chmod 600 "$$KEY"
-          chown postgres:postgres "$$CERT" "$$KEY"
-        fi
-        exec docker-entrypoint.sh postgres \
-          -c ssl=on \
-          -c ssl_cert_file="$$CERT" \
-          -c ssl_key_file="$$KEY"
+      - ssl=on
+      - -c
+      - ssl_cert_file=/certs/server.crt
+      - -c
+      - ssl_key_file=/certs/server.key
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 2s
@@ -39,6 +44,12 @@ services:
       retries: 30
     expose:
       - "5432"
+    # Docker DNS resolves localhost.shion.dev -> this container inside the network,
+    # so the client can dial the SNI hostname and reach Postgres.
+    networks:
+      default:
+        aliases:
+          - localhost.shion.dev
 
   tester:
     build:
@@ -48,10 +59,26 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    # NET_RAW lets tcpdump capture the on-the-wire bytes into the .pcap artifact.
+    cap_add:
+      - NET_RAW
+      - NET_ADMIN
+    volumes:
+      - certs:/certs:ro
+      # Writable volume for machine-readable evidence + the full proof log,
+      # which CI copies out for the Job Summary and as a downloadable artifact.
+      - out:/out
     environment:
-      PGHOST: postgres
+      # The hostname the client dials AND sends as SNI; cert is issued for it.
+      PGHOST: localhost.shion.dev
       PGPORT: "5432"
       PGUSER: postgres
       PGDATABASE: postgres
-      # Pin which node-postgres ref to test. Defaults to master.
+      PG_SNI: localhost.shion.dev
+      CA_CERT: /certs/ca.crt
+      EVIDENCE_PATH: /out/evidence.json
       NODE_POSTGRES_REF: ${NODE_POSTGRES_REF:-master}
+
+volumes:
+  certs:
+  out:

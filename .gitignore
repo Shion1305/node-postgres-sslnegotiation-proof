@@ -3,3 +3,8 @@ node_modules/
 *.key
 *.crt
 NODE_POSTGRES_HEAD
+
+# Local run output / IDE
+artifacts/
+out/
+.idea/

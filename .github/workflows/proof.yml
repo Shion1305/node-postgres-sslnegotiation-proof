@@ -3,6 +3,11 @@ name: sslnegotiation proof
 # Objectively prove that node-postgres `master` works with PostgreSQL 17
 # `sslnegotiation=direct` (PR #3688). Everything runs in Docker containers, so
 # the run is fully reproducible: CI does exactly what you'd do locally.
+#
+# A reviewer does NOT need to read the proof code: this job
+#   * prints a PASS/FAIL table with the raw evidence into the Job Summary, and
+#   * uploads first-hand artifacts (a tcpdump .pcap, the PostgreSQL server log,
+#     evidence.json, and the full proof output) for independent inspection.
 
 on:
   push:
@@ -21,17 +26,51 @@ on:
 jobs:
   proof:
     runs-on: ubuntu-latest
+    env:
+      NODE_POSTGRES_REF: ${{ github.event.inputs.node_postgres_ref || 'master' }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Run the containerized proof against node-postgres ${{ github.event.inputs.node_postgres_ref || 'master' }}
-        env:
-          NODE_POSTGRES_REF: ${{ github.event.inputs.node_postgres_ref || 'master' }}
+      - name: Build the containerized proof (node-postgres ${{ env.NODE_POSTGRES_REF }})
+        run: docker compose build
+
+      - name: Run the proof
+        id: run
         run: |
-          docker compose build --build-arg NODE_POSTGRES_REF="$NODE_POSTGRES_REF"
-          docker compose up \
-            --abort-on-container-exit \
-            --exit-code-from tester
+          set +e
+          docker compose up --abort-on-container-exit --exit-code-from tester
+          echo "exit_code=$?" >> "$GITHUB_OUTPUT"
+
+      - name: Collect artifacts (evidence, pcap, logs)
+        if: always()
+        run: |
+          mkdir -p artifacts
+          # Copy everything the tester wrote to the shared `out` volume.
+          docker run --rm -v "$(docker volume ls -q | grep -E '_out$' | head -1)":/out \
+            -v "$PWD/artifacts":/dst alpine:3.20 sh -c 'cp -a /out/. /dst/ 2>/dev/null || true'
+          # Capture the PostgreSQL server-side log (its own record of SSL conns).
+          docker compose logs --no-color postgres > artifacts/postgres-server.log 2>&1 || true
+          echo "Collected:"; ls -la artifacts || true
+
+      - name: Render Job Summary from evidence.json
+        if: always()
+        run: |
+          node .github/scripts/summary.js artifacts/evidence.json >> "$GITHUB_STEP_SUMMARY" || {
+            echo "### sslnegotiation proof" >> "$GITHUB_STEP_SUMMARY"
+            echo "evidence.json not found — see the run logs." >> "$GITHUB_STEP_SUMMARY"
+          }
+
+      - name: Upload evidence artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sslnegotiation-proof-evidence
+          path: artifacts/
+          if-no-files-found: warn
+
+      - name: Fail if any proof failed
+        if: always()
+        run: exit ${{ steps.run.outputs.exit_code }}
 
       - name: Tear down
         if: always()

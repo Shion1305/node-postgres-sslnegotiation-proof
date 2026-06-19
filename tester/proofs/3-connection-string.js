@@ -16,11 +16,14 @@ module.exports = async function proofConnectionString() {
     `parsed.ssl            = ${JSON.stringify(parsed.ssl)}`,
   ])
 
-  // 2) Live: connect using ONLY a connection string. Because the self-signed
-  //    cert isn't a known CA, disable verification via the string too.
+  // 2) Live: connect via a connection string ALONE using sslnegotiation=direct,
+  //    with sslmode=verify-full so the cert chain AND the hostname
+  //    (localhost.shion.dev) are both verified, and sslrootcert pointing at our
+  //    test CA. Everything comes from the string — no separate ssl object — so
+  //    this exercises the merged pg-connection-string parsing end to end.
   const connectionString =
     `postgres://${env.user}@${env.host}:${env.port}/${env.database}` +
-    `?sslnegotiation=direct&sslmode=no-verify`
+    `?sslnegotiation=direct&sslmode=verify-full&sslrootcert=${encodeURIComponent(env.caCertPath)}`
   const client = new Client({ connectionString })
   await client.connect()
   const r = await client.query(
@@ -28,10 +31,18 @@ module.exports = async function proofConnectionString() {
   )
   await client.end()
   const liveOk = r.rows[0].ssl === true && /TLS/.test(String(r.rows[0].version))
-  logResult('Connection string with sslnegotiation=direct connects over TLS', liveOk, [
+  logResult('Connection string (sslnegotiation=direct, verify-full) connects over TLS', liveOk, [
     `connectionString = ${connectionString}`,
+    `verified cert chain + hostname ${env.host} against our CA`,
     `pg_stat_ssl -> ssl=${r.rows[0].ssl} version=${r.rows[0].version}`,
   ])
 
-  return parserOk && liveOk
+  return {
+    ok: parserOk && liveOk,
+    evidence: {
+      parsed: `sslnegotiation=${JSON.stringify(parsed.sslnegotiation)} ssl=${JSON.stringify(parsed.ssl)}`,
+      connectionString: `...?sslnegotiation=direct&sslmode=verify-full&sslrootcert=...`,
+      livePgStatSsl: `ssl=${r.rows[0].ssl} version=${r.rows[0].version}`,
+    },
+  }
 }

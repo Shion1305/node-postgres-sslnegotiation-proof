@@ -1,10 +1,11 @@
 # Tester image: installs `pg` from node-postgres master and runs the proofs.
 FROM node:24-bookworm-slim
 
-# git is needed to clone node-postgres; postgresql-client for an independent
-# psql sanity check of pg_stat_ssl from outside Node.
+# git: clone node-postgres. postgresql-client: independent psql sanity checks.
+# tcpdump: capture the raw first bytes each negotiation mode puts on the wire,
+# saved as a .pcap artifact reviewers can open in Wireshark.
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends git ca-certificates postgresql-client \
+  && apt-get install -y --no-install-recommends git ca-certificates postgresql-client tcpdump \
   && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

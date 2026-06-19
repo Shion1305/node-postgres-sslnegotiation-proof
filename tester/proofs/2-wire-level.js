@@ -5,7 +5,7 @@
 //   * direct      -> a TLS ClientHello record: 0x16 0x03 ...  (NO SSLRequest)
 //   * traditional -> the PostgreSQL SSLRequest packet: 00 00 00 08 04 d2 16 2f
 const { Client } = require('pg')
-const { env, SSLREQUEST_HEX, startCapturingProxy, logResult } = require('./lib')
+const { env, SSLREQUEST_HEX, verifyingSsl, startCapturingProxy, logResult } = require('./lib')
 
 async function firstBytesFor(sslnegotiation) {
   let captured = null
@@ -15,7 +15,9 @@ async function firstBytesFor(sslnegotiation) {
     port: proxy.port,
     user: env.user,
     database: env.database,
-    ssl: { rejectUnauthorized: false },
+    // Dial the proxy by IP, but still send SNI=localhost.shion.dev and verify
+    // the upstream cert against our CA.
+    ssl: verifyingSsl(),
     sslnegotiation,
   })
   await client.connect()
@@ -43,5 +45,13 @@ module.exports = async function proofWireLevel() {
     logResult('Direct mode does NOT send the SSLRequest packet', !directIsSSLReq) &&
     logResult('Traditional mode DOES send the SSLRequest packet', tradIsSSLReq)
 
-  return ok
+  return {
+    ok,
+    evidence: {
+      // First 16 bytes each mode put on the wire — the crux of the proof.
+      directFirst16: directBytes,
+      traditionalFirst16: tradBytes,
+      sslRequestSignature: SSLREQUEST_HEX,
+    },
+  }
 }

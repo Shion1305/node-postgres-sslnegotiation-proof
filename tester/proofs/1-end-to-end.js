@@ -4,7 +4,7 @@
 // query, and ask the SERVER (via pg_stat_ssl) to confirm the connection is
 // genuinely encrypted. Also confirm the traditional path still works.
 const { Client } = require('pg')
-const { env, logResult } = require('./lib')
+const { env, verifyingSsl, logResult } = require('./lib')
 
 async function connectAndInspect(sslnegotiation) {
   const client = new Client({
@@ -12,7 +12,8 @@ async function connectAndInspect(sslnegotiation) {
     port: env.port,
     user: env.user,
     database: env.database,
-    ssl: { rejectUnauthorized: false },
+    // Trust our CA and verify the cert against the SNI hostname.
+    ssl: verifyingSsl(),
     sslnegotiation,
   })
   await client.connect()
@@ -32,7 +33,8 @@ module.exports = async function proofEndToEnd() {
   const directOk =
     direct.select1.ok === 1 && direct.ssl.ssl === true && /TLS/.test(String(direct.ssl.version))
 
-  logResult('Direct negotiation connects and server confirms TLS', directOk, [
+  logResult('Direct negotiation connects (verified TLS, SNI=' + env.sni + ')', directOk, [
+    `connected to host=${env.host} with verified cert for SNI ${env.sni}`,
     `SELECT 1 -> ${JSON.stringify(direct.select1)}`,
     `pg_stat_ssl -> ssl=${direct.ssl.ssl} version=${direct.ssl.version} cipher=${direct.ssl.cipher} bits=${direct.ssl.bits}`,
   ])
@@ -45,5 +47,13 @@ module.exports = async function proofEndToEnd() {
     `pg_stat_ssl -> ssl=${trad.ssl.ssl} version=${trad.ssl.version}`,
   ])
 
-  return directOk && tradOk
+  return {
+    ok: directOk && tradOk,
+    evidence: {
+      // The server's own report that the direct connection is encrypted.
+      directPgStatSsl: `ssl=${direct.ssl.ssl} version=${direct.ssl.version} cipher=${direct.ssl.cipher} bits=${direct.ssl.bits}`,
+      verifiedSni: env.sni,
+      traditionalPgStatSsl: `ssl=${trad.ssl.ssl} version=${trad.ssl.version}`,
+    },
+  }
 }
