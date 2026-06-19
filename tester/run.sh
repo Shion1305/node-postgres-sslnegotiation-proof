@@ -12,7 +12,9 @@ mkdir -p /out
 PCAP=/out/capture.pcap
 TCPDUMP_PID=""
 if command -v tcpdump >/dev/null 2>&1; then
-  tcpdump -i any -s 96 -w "$PCAP" 'tcp port 5432 or tcp portrange 1024-65535' \
+  # -U writes each packet to the file as it arrives, so a fast, short-lived run
+  # can't leave captured packets stuck in a buffer that never gets flushed.
+  tcpdump -i any -s 96 -U -w "$PCAP" 'tcp port 5432 or tcp portrange 1024-65535' \
     >/out/tcpdump.log 2>&1 &
   TCPDUMP_PID=$!
   # Give tcpdump time to start sniffing before the first connection. If it died
